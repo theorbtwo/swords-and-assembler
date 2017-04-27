@@ -190,9 +190,9 @@ def handle__s_FuncInfo(funcinfo_addr):
             stateinfo.append((tostate, action))
             
     if nTryBlocks > 0:
-        # win10 explorer.exe
+        # win10 explorer.exe, web'n'walk manager
         print "warning: try blocks not supported yet nTryBlocks is {}".format(nTryBlocks)
-        1/0
+        #1/0
 
     if nIPMapEntries > 0:
         #print "nIPMapEntries is {}".format(nIPMapEntries)
