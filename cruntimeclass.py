@@ -7,6 +7,8 @@ from idajmm import *
 # FIXME: Why does this not get imported from idajmm?
 __ImageBase = LocByName("__ImageBase")
 
+size_offset = mwbytes
+parent_offset = mwbytes + 4 * 4
 
 
 root_todo_item = [ScreenEA(), "CRuntimeClass", "(ScreenEA at start)"]
@@ -36,7 +38,7 @@ while todo_list:
     MakeNameHarder(todo_addr, crc_name)
     # FIXME: Define this struct!
     MakeStructHard(todo_addr, "CRuntimeClass")
-    size = Mw(todo_addr + mwbytes)
+    size = Dword(todo_addr + size_offset)
 
     this_sid = GetStrucIdByName(name)
     if this_sid == 0xffffffffffffffff:
@@ -49,10 +51,10 @@ while todo_list:
         AddStrucMember(this_sid, "end_marker", size-1, FF_DATA|FF_BYTE, -1, 1)
 
     # FIXME: Tell the difference between parent-is-function (dynamically linked) and parent-is-struct (staticly linked)
-    parent = Mw(todo_addr + mwbytes * 4)
+    parent = Mw(todo_addr + parent_offset)
     if parent:
         parent_name = MakeAndGetString(Mw(parent))
-        parent_size = Mw(parent + mwbytes)
+        parent_size = Dword(parent + size_offset)
         parent_sid  = GetStrucIdByName(parent_name)
         print "Adding parent to struct, {} {:#x} len {}".format(parent_name, parent_sid, parent_size)
 
@@ -117,4 +119,4 @@ while todo_list:
             print " Not data, skipping (MS_CLS is {:#x})".format(flags & MS_CLS)
             continue
         
-        todo_list.append([search_ret - mwbytes*4, "CRuntimeClass", "ofi {}, ref to {}, flags={:#x}".format(overall_find_i, name, flags)])
+        todo_list.append([search_ret - parent_offset, "CRuntimeClass", "ofi {}, ref to {}, flags={:#x}".format(overall_find_i, name, flags)])
