@@ -9,6 +9,9 @@ from idajmm import *
 
 __ImageBase = LocByName("__ImageBase")
 
+### porr: pointer-or-rva -- a 32-bit pointer on 32-bit binaries, or a 32-bit RVA on 64 bit machines, which keeps the
+### sizes down/consistant.
+
 if is32bit:
     porr_reftype = REF_OFF32
     porr_base    = 0
@@ -56,6 +59,38 @@ for seg in Segments():
 def in_image(ea):
     return ea >= first_seg and ea <= SegEnd(last_seg)
 
+def demangle_plus(mangled):
+    prefix = ""
+    inner = None
+    
+    mo = re.match(r"\.(\?|PE)A(?P<complex>[TUVXY])(?P<inner>.*)$", mangled)
+    if mo:
+        # FIXME: What is the difference between ? and PE?
+        # What is .PEAX?
+        complex = mo.group("complex")
+        if complex == "T":
+            prefix = "union "
+        elif complex == "U":
+            prefix = "struct "
+        elif complex == "V":
+            prefix = "class "
+        elif complex == "X":
+            prefix = "coclass "
+        elif complex == "Y":
+            prefix = "cointerface "
+        inner = mo.group("inner")
+
+
+    if not inner:
+        print "Could not demangle / find inner for '{}'".format(mangled)
+        inner = mangled
+
+    s = Demangle('??_7' + inner + '6B@', 8)
+    if s:
+        return prefix + s[0:len(s)-11]
+    else:
+        return prefix + inner
+
 def get_class_name(name_addr, prefixlen=4):
     s = Demangle('??_7' + GetString(name_addr + prefixlen) + '6B@', 8)
     if s != None:
@@ -63,97 +98,31 @@ def get_class_name(name_addr, prefixlen=4):
     else:
         return GetString(name_addr)
 
+#### We used to look for strings like .?A[UV], which has the advantage of being fully automatic.  OTOH, it has the disadvantage of not
+#### really catching everything -- there are a few type info thingies with very odd names.  We now search for references to type_info_vtbl,
+#### which catches all the things, hopefully.
+
+#### Hm.  We can fix that.  Search for ".?AVtype_info@@", look back to the preceeding pointer, which will be to type_info_vtbl.
+type_info_vtbl = LocByName("type_info_vtbl")
 
 
+def handle_rcol(rcol, class_name):
+    MakeStructHard(rcol, "_s__RTTICompleteObjectLocator")
+    MakeNameHarder(rcol, "{}_rcol".format(class_name))
+    print " CompleteObjectLocator at {:#x}".format(rcol)
 
-# start: Where we should start searching from, next time.
-start = first_seg
-print "Starting at {:#x}".format(start)
-while True:
-    f = BADADDR
-    prefixlen = 0
-    poss = FindBinary(start, SEARCH_DOWN, "2E 3F 41 55") # .?AU
-    if (poss < f):
-        prefixlen = 4
-        f = poss
-    poss = FindBinary(start, SEARCH_DOWN, "2E 3F 41 56") # .?AV
-    if (poss < f):
-        prefixlen = 4
-        f = poss
-    poss = FindBinary(start, SEARCH_DOWN, "2E 50 41 56") # .PAV
-    if (poss < f):
-        prefixlen = 5
-        f = poss
-        
-    if f == BADADDR:
-        break
-    class_name = get_class_name(f)
-    start = f + prefixlen
-    # http://www.geoffchappell.com/studies/msvc/language/predefined/index.htm?tx=12 -- _TypeDescriptor
-    rtd = f - 2*mwbytes
-    MakeNameHarder(rtd, "{}_rtd".format(class_name))
-    MakeRptCmt(rtd, "{} (std::type_info)".format(class_name));
-    
-    MakeUnknown(rtd, mwbytes*2, 0)
-    MakeMw(rtd)
-    OpOff(rtd, 0, 0)
-    
-    MakeName(rtd+mwbytes, "")
-    MakeMw(rtd+mwbytes)
-
-    make_ascii_string(rtd+mwbytes*2, 0, ASCSTR_C)
-
-# Looking for cross-references turns out to not be as useful as you might hope, because the 32-bit rva pointers
-# that are used for referencing on this level don't get picked up as such by the autoanalysis.
-# Instead, it seems we must search every four-byte boundry for it's own address minus 6*4?
-# For the moment, just the .rdata section, hardcoded?
-
-seg = SegByName(".rdata")
-start = SegByBase(seg)
-image_base = first_seg
-
-last_report = 0
-report_freq = 1024*1024
-while True:
-    # The "signature" field is always 1, which is a bit like signing "X", but it's somewhere to start.
-    if is32bit:
-        f = FindBinary(start, SEARCH_DOWN, "00 00 00 00")
-    else:
-        f = FindBinary(start, SEARCH_DOWN, "01 00 00 00")
-    if f == BADADDR:
-        break
-    start = f+4
-
-    if f > last_report+report_freq:
-        print "F now {:#x}".format(f)
-        last_report = f
-
-    if image_base+Dword(f+0x14) != f:
-        continue
-
-
-    # The pTypeDescriptor points to a typedescriptor, which we have hopefully already given a name above,
-    # but go ahead and get the name again, so we can use it to rename everything else.
-    rtd = image_base + Dword(f + 3*4)
-    class_name = get_class_name(rtd + 0x10)
-    print "Class name {}".format(class_name)
-
-    MakeStructHard(f, "_s__RTTICompleteObjectLocator")
-    MakeNameHarder(f, "{}_rcol".format(class_name))
-    print " CompleteObjectLocator at {:#x}".format(f)
-
-    rchd = image_base + Dword(f + 4*4)
+    rchd = porr_base + Dword(rcol + 4*4)
     print " class heierarchy descriptor: {:#x}".format(rchd)
     MakeStructHard(rchd, "_s__RTTIClassHierarchyDescriptor")
     MakeNameHarder(rchd, "{}_rchd".format(class_name))
     numBaseClasses = Dword(rchd + 0x8)
-    rbca = image_base + Dword(rchd + 3*4)
+    rbca = porr_base + Dword(rchd + 3*4)
 
     print " rtti base class array {:#x}".format(rbca)
     MakeNameHarder(rbca, "{}_rbca".format(class_name))
     MakeUnknown(rbca, numBaseClasses * 4, 0)
     MakeDword(rbca)
-    OpOffEx(rbca, 0, REF_OFF64 | REFINFO_RVA, -1, image_base, 0)
+    OpOffEx(rbca, 0, porr_reftype, -1, porr_base, 0)
     MakeArray(rbca, numBaseClasses)
 
     # The number of classes for whom this is the last base class, by index in the rbca.
@@ -161,7 +130,7 @@ while True:
     summary_string = ""
     depth = 0
     for i in range(numBaseClasses):
-        rbcd = image_base + Dword(rbca + i * 4)
+        rbcd = porr_base + Dword(rbca + i * 4)
         MakeStructHard(rbcd, "_s__RTTIBaseClassDescriptor")
         base_rta = RVAAt(rbcd)
         base_rta_name = GetTrueName(base_rta)
@@ -211,3 +180,121 @@ while True:
 # It is possible, IE AlchemyItem, for a single _rtd to have multiple _rcol structures.
 # They have different _rcol.offset, but all point to the same rchd, and thus the same
 # list of RBCDs.  They will, however, each have their own vtable.
+    
+
+def handle_rtd(type_info):
+    deconame = MakeAndGetString(type_info + mwbytes*2)
+    undeconame = demangle_plus(deconame)
+    
+
+    MakeNameHarder(type_info, "{}_rtd".format(undeconame))
+    MakeRptCmt(type_info, undeconame)
+    # type_info vtable
+    MakeMw(type_info)
+    # spare
+    OpOff(type_info, 0, 0)
+    # name
+    MakeMw(type_info + mwbytes)
+    
+    print "Found type_info for {} -> {} at {:#x}".format(deconame, undeconame, type_info)
+
+    if is32bit:
+        thing_to_look_for = type_info
+    if is64bit:
+        thing_to_look_for = type_info - __ImageBase
+
+    start_rtdref_search = first_seg
+    while True:
+        rtdref = FindBinary(start_rtdref_search, SEARCH_DOWN, "{:x}".format(thing_to_look_for), 16)
+        if rtdref == BADADDR:
+            print "Got to BADADDR"
+            break
+        start_rtdref_search = rtdref + 1
+
+        print " rtdref at {:#x}".format(rtdref)
+
+        # We're looking for the _s__RTTICompleteObjectLocator (rcol) here.  There are two reasonably validatable bits of
+        # the rcol -- there is a "signature" that should be dword 1 (fixme: for 64-bit executables?) and a link back
+        # to the rtd -- IE ourself.
+        rcol = rtdref - 0xC
+        if (Dword(rcol) != 1):
+            print "Signature != 1"
+            continue
+
+        # FIXME: don't subtract __ImageBase on 32-bit
+        if (Dword(rcol + 0x14) + __ImageBase != rcol):
+            print "self-link bad"
+            continue
+
+        handle_rcol(rcol, undeconame)
+        
+
+
+
+# start: Where we should start searching from, next time.
+start = first_seg
+search_string = "{:x}".format(type_info_vtbl)
+print "Starting at {:#x}, looking for '{}'".format(start, search_string)
+while True:
+    type_info = FindBinary(start, SEARCH_DOWN, search_string, 16)
+
+    handle_rtd(type_info)
+    
+    if type_info == BADADDR:
+        print "Got to BADADDR"
+        break
+    
+    start = type_info+1
+
+
+##    class_name = get_class_name(f)
+##    start = f + prefixlen
+##    # http://www.geoffchappell.com/studies/msvc/language/predefined/index.htm?tx=12 -- _TypeDescriptor
+##    rtd = f - 2*mwbytes
+##    MakeNameHarder(rtd, "{}_rtd".format(class_name))
+##    MakeRptCmt(rtd, "{} (std::type_info)".format(class_name));
+##    
+##    MakeUnknown(rtd, mwbytes*2, 0)
+##    MakeMw(rtd)
+##    OpOff(rtd, 0, 0)
+##    
+##    MakeName(rtd+mwbytes, "")
+##    MakeMw(rtd+mwbytes)
+##
+##    make_ascii_string(rtd+mwbytes*2, 0, ASCSTR_C)
+##
+### Looking for cross-references turns out to not be as useful as you might hope, because the 32-bit rva pointers
+### that are used for referencing on this level don't get picked up as such by the autoanalysis.
+### Instead, it seems we must search every four-byte boundry for it's own address minus 6*4?
+### For the moment, just the .rdata section, hardcoded?
+##
+##seg = SegByName(".rdata")
+##start = SegByBase(seg)
+##image_base = first_seg
+##
+##last_report = 0
+##report_freq = 1024*1024
+##while True:
+##    # The "signature" field is always 1, which is a bit like signing "X", but it's somewhere to start.
+##    if is32bit:
+##        f = FindBinary(start, SEARCH_DOWN, "00 00 00 00")
+##    else:
+##        f = FindBinary(start, SEARCH_DOWN, "01 00 00 00")
+##    if f == BADADDR:
+##        break
+##    start = f+4
+##
+##    if f > last_report+report_freq:
+##        print "F now {:#x}".format(f)
+##        last_report = f
+##
+##    if image_base+Dword(f+0x14) != f:
+##        continue
+##
+##
+##    # The pTypeDescriptor points to a typedescriptor, which we have hopefully already given a name above,
+##    # but go ahead and get the name again, so we can use it to rename everything else.
+##    rtd = image_base + Dword(f + 3*4)
+##    class_name = get_class_name(rtd + 0x10)
+##    print "Class name {}".format(class_name)
+##
