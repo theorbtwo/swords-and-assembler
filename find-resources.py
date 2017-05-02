@@ -1,6 +1,3 @@
-# IDA Python RTTI parser ~pod2g 06/2013
-# http://blog.quarkslab.com/visual-c-rtti-inspection.html
-
 from idaapi import *
 from idc import *
 if sys.modules.has_key("idajmm"):
@@ -66,6 +63,7 @@ while todo_list:
         name_raw = Dword(entry_ea)
         if is_named:
             name_effective = name_raw + rsrc_base - 0x80000000
+            OpOffEx(entry_ea, 0, REF_OFF32, -1, rsrc_base, 0x80000000)
             name = MakeAndGetString(name_effective, ASCSTR_ULEN2)
         else:
             if todo_item[1] == "base" and name_raw in resource_types:
@@ -83,10 +81,12 @@ while todo_list:
         payload_effective = payload + rsrc_base
         if payload & 0x80000000:
             payload_effective = payload_effective - 0x80000000
+            OpOffEx(entry_ea + 4, 0, REF_OFF64, -1, rsrc_base, 0x80000000)
             todo_list.append([payload_effective, child_name])
         else:
-            MakeNameHarder(payload_effective, child_name)
-        
+            OpOffEx(entry_ea + 4, 0, REF_OFF64, -1, rsrc_base, 0)
+            MakeNameHarder(payload_effective, "{}_almost".format(child_name))
+            MakeNameHarder(RVAAt(payload_effective, True), "{}_data".format(child_name))
     
     for i in range(0, rdt_name_entries(table_ea)):
         handle_entry(entry_ea, todo_item[1], True)
@@ -95,3 +95,14 @@ while todo_list:
     for i in range(0, rdt_id_entries(table_ea)):
         handle_entry(entry_ea, todo_item[1], False)
         entry_ea = entry_ea + 8
+
+# Some slightly random notes on dialog resources
+"""
+http://www.csn.ul.ie/~caolan/pub/winresdump/winresdump/doc/resfmt.txt
+ - very out of date, but best I've found...
+
+https://github.com/CyberGrandChallenge/binutils/blob/master/binutils/resbin.c#L423
+
+
+ 
+"""
